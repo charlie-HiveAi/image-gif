@@ -293,6 +293,25 @@ impl StreamingDecoder {
         Ok((len-buf.len(), Decoded::Nothing))
         
     }
+
+    /// Reads bytes until the first frame is received
+    pub fn read_until_first_frame<'a>(&'a mut self, mut buf: &[u8])
+    -> Result<(usize, bool), DecodingError> {
+        let mut num_bytes_until_first_frame = 0; 
+        while buf.len() > 0 && self.state.is_some() {
+            match self.next_state(buf) {
+                Ok((_zero_bytes, Decoded::DataEnd)) => {
+                    return Ok((num_bytes_until_first_frame, true))
+                }
+                Ok((bytes, _result)) => {
+                    buf = &buf[bytes..];
+                    num_bytes_until_first_frame += bytes;
+                }
+                Err(err) => return Err(err)
+            }
+        }
+        Ok((num_bytes_until_first_frame, false))        
+    }
     
     /// Returns the data of the last extension that has been decoded.
     pub fn last_ext(&self) -> (AnyExtension, &[u8], bool) {
@@ -721,4 +740,43 @@ impl StreamingDecoder {
 #[test]
 fn error_cast() {
     let _ : Box<dyn error::Error> = DecodingError::Format(DecodingFormatError::new("testing")).into();
+}
+
+#[cfg(test)]
+mod test {
+    use tokio::fs::OpenOptions;
+    use tokio::io::{BufWriter, AsyncWriteExt};
+    use crate::StreamingDecoder;
+
+
+    #[tokio::test]
+    async fn test_extract_gif() {
+        let url = "https://www.sample-videos.com/gif/1.gif";
+        // Easy optimization is let trailer: u16 = 59. 
+        // But for readability and semantics let's have separate IO writes
+        let block_terminator: u8 = 0; // Block terminator
+        let trailer: u8 = 59; // Corresponds to 3B
+        let f = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .open("extracted_gif.gif")
+            .await
+            .expect("Unable to open file");
+        let mut writer = BufWriter::new(f);
+        let mut decoder = StreamingDecoder::new();
+        let mut response = reqwest::get(url).await.unwrap();
+        while let Ok(Some(chunk)) = response.chunk().await {
+            let (bytes_needed, stop) = decoder.read_until_first_frame(&chunk).unwrap();
+            // println!("Bytes needed: {}, stop: {}", bytes_needed, stop);
+            writer.write_all(&chunk[..bytes_needed]).await.unwrap();
+            if stop {
+                writer.write_u8(block_terminator).await.unwrap();
+                writer.write_u8(trailer).await.unwrap();
+                writer.flush().await.unwrap();
+                break;
+            }
+            // writer.write_all(&chunk).await.unwrap();
+        }
+        // writer.flush().await.unwrap();
+    }
 }
