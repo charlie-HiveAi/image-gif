@@ -314,18 +314,20 @@ impl StreamingDecoder {
         &'a mut self,
         mut buf: &[u8],
         writer: &mut W,
-    ) -> Result<FirstFrameIsRead, DecodingError> {
+    ) -> Result<(usize, FirstFrameIsRead), DecodingError> {
+        let mut num_bytes_until_first_frame = 0;
         while buf.len() > 0 && self.state.is_some() {
             match self.next_state(buf) {
-                Ok((_zero_bytes, Decoded::DataEnd)) => return Ok(true),
+                Ok((_zero_bytes, Decoded::DataEnd)) => return Ok((num_bytes_until_first_frame, true)),
                 Ok((bytes, _result)) => {
                     writer.write_all(&buf[..bytes]).await.expect("Write error");
                     buf = &buf[bytes..];
+                    num_bytes_until_first_frame += bytes;
                 }
                 Err(err) => return Err(err),
             }
         }
-        Ok(false)
+        Ok((num_bytes_until_first_frame, false))
     }
 
     /// Returns the data of the last extension that has been decoded.
@@ -827,8 +829,9 @@ mod test {
         let mut decoder = StreamingDecoder::new();
         let mut response = reqwest::get(url).await.unwrap();
         let mut first_frame_is_read = false;
+        let mut image_size = 0;
         while let Ok(Some(chunk)) = response.chunk().await {
-            first_frame_is_read = decoder
+            (image_size, first_frame_is_read) = decoder
                 .write_until_first_frame(&chunk, &mut writer)
                 .await
                 .unwrap();
@@ -843,5 +846,6 @@ mod test {
             // Return some error
             println!("First frame is not read");
         }
+        println!("Wrote {} bytes", image_size);
     }
 }
