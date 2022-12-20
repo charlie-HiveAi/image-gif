@@ -20,13 +20,13 @@ exclude = [
 [dependencies]
 weezl = "0.1.5"
 color_quant = { version = "1.0", optional = true }
+tokio = { version = "1.23.0", features = ["rt", "macros", "fs"] }
 
 [dev-dependencies]
 glob = "0.3"
 criterion = "0.3.1"
 png = "0.17.2"
 reqwest = { version = "0.11.13", features = ["blocking"] }
-tokio = { version = "1.23.0", features = ["rt", "macros", "fs"] }
 
 [features]
 default = ["raii_no_panic", "std", "color_quant"]

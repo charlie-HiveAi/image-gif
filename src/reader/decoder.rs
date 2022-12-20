@@ -1,14 +1,18 @@
 use std::cmp;
+use std::default::Default;
 use std::error;
 use std::fmt;
 use std::io;
 use std::mem;
-use std::default::Default;
 
 use crate::common::{AnyExtension, Block, DisposalMethod, Extension, Frame};
 use crate::reader::DecodeOptions;
 
-use weezl::{BitOrder, decode::Decoder as LzwDecoder, LzwStatus};
+use tokio::io::AsyncWriteExt;
+use weezl::{decode::Decoder as LzwDecoder, BitOrder, LzwStatus};
+
+/// type alias
+type FirstFrameIsRead = bool;
 
 /// GIF palettes are RGB
 pub const PLTE_CHANNELS: usize = 3;
@@ -16,7 +20,7 @@ pub const PLTE_CHANNELS: usize = 3;
 /// An error returned in the case of the image not being formatted properly.
 #[derive(Debug)]
 pub struct DecodingFormatError {
-    underlying: Box<dyn error::Error + Send + Sync + 'static>
+    underlying: Box<dyn error::Error + Send + Sync + 'static>,
 }
 
 impl fmt::Display for DecodingFormatError {
@@ -32,9 +36,7 @@ impl error::Error for DecodingFormatError {
 }
 
 impl DecodingFormatError {
-    fn new(
-        err: impl Into<Box<dyn error::Error + Send + Sync>>,
-    ) -> Self {
+    fn new(err: impl Into<Box<dyn error::Error + Send + Sync>>) -> Self {
         DecodingFormatError {
             underlying: err.into(),
         }
@@ -52,9 +54,7 @@ pub enum DecodingError {
 
 impl DecodingError {
     #[inline]
-    pub(crate) fn format(
-        err: impl Into<Box<dyn error::Error + Send + Sync>>,
-    ) -> Self {
+    pub(crate) fn format(err: impl Into<Box<dyn error::Error + Send + Sync>>) -> Self {
         DecodingError::Format(DecodingFormatError::new(err))
     }
 }
@@ -96,7 +96,7 @@ pub enum Extensions {
     Save,
     /// Skips the data of unknown extensions
     /// and extracts the data from known ones
-    Skip
+    Skip,
 }
 
 /// Indicates whether a certain object has been decoded
@@ -130,7 +130,6 @@ pub enum Decoded<'a> {
     Data(&'a [u8]),
     /// No more data available the current frame.
     DataEnd,
-
 }
 
 /// Internal state of the GIF decoder
@@ -150,7 +149,7 @@ enum State {
     LzwInit(u8),
     DecodeSubBlock(usize),
     FrameDecoded,
-    Trailer
+    Trailer,
 }
 use self::State::*;
 
@@ -247,33 +246,30 @@ impl StreamingDecoder {
                 data: Vec::with_capacity(256), // 0xFF + 1 byte length
                 is_block_end: true,
             },
-            current: None
+            current: None,
         }
     }
-    
-    /// Updates the internal state of the decoder. 
+
+    /// Updates the internal state of the decoder.
     ///
-    /// Returns the number of bytes consumed from the input buffer 
+    /// Returns the number of bytes consumed from the input buffer
     /// and the last decoding result.
-    pub fn update<'a>(&'a mut self, mut buf: &[u8])
-    -> Result<(usize, Decoded<'a>), DecodingError> {
+    pub fn update<'a>(&'a mut self, mut buf: &[u8]) -> Result<(usize, Decoded<'a>), DecodingError> {
         // NOTE: Do not change the function signature without double-checking the
         //       unsafe block!
         let len = buf.len();
         while buf.len() > 0 && self.state.is_some() {
             match self.next_state(buf) {
-                Ok((bytes, Decoded::Nothing)) => {
-                    buf = &buf[bytes..]
-                }
+                Ok((bytes, Decoded::Nothing)) => buf = &buf[bytes..],
                 Ok((bytes, Decoded::Trailer)) => {
                     buf = &buf[bytes..];
-                    break
+                    break;
                 }
                 Ok((bytes, result)) => {
                     buf = &buf[bytes..];
-                    return Ok(
-                        (len-buf.len(), 
-                        // This transmute just casts the lifetime away. Since Rust only 
+                    return Ok((
+                        len - buf.len(),
+                        // This transmute just casts the lifetime away. Since Rust only
                         // has SESE regions, this early return cannot be worked out and
                         // such that the borrow region of self includes the whole block.
                         // The explixit lifetimes in the function signature ensure that
@@ -282,22 +278,22 @@ impl StreamingDecoder {
                         // To check that everything is sound, return the result without
                         // the match (e.g. `return Ok(self.next_state(buf)?)`). If
                         // it compiles the returned lifetime is correct.
-                        unsafe { 
-                            mem::transmute::<Decoded, Decoded>(result)
-                        }
-                    ))
+                        unsafe { mem::transmute::<Decoded, Decoded>(result) },
+                    ));
                 }
-                Err(err) => return Err(err)
+                Err(err) => return Err(err),
             }
         }
-        Ok((len-buf.len(), Decoded::Nothing))
-        
+        Ok((len - buf.len(), Decoded::Nothing))
     }
 
-    /// Reads bytes until the first frame is received
-    pub fn read_until_first_frame<'a>(&'a mut self, mut buf: &[u8])
-    -> Result<(usize, bool), DecodingError> {
-        let mut num_bytes_until_first_frame = 0; 
+    /// Reads bytes until the first frame is read and return the number of bytes
+    /// before the first frame
+    pub fn read_until_first_frame<'a>(
+        &'a mut self,
+        mut buf: &[u8],
+    ) -> Result<(usize, FirstFrameIsRead), DecodingError> {
+        let mut num_bytes_until_first_frame = 0;
         while buf.len() > 0 && self.state.is_some() {
             match self.next_state(buf) {
                 Ok((_zero_bytes, Decoded::DataEnd)) => {
@@ -307,23 +303,42 @@ impl StreamingDecoder {
                     buf = &buf[bytes..];
                     num_bytes_until_first_frame += bytes;
                 }
-                Err(err) => return Err(err)
+                Err(err) => return Err(err),
             }
         }
-        Ok((num_bytes_until_first_frame, false))        
+        Ok((num_bytes_until_first_frame, false))
     }
-    
+
+    /// Write bytes until the first frame is read
+    pub async fn write_until_first_frame<'a, W: AsyncWriteExt + std::marker::Unpin>(
+        &'a mut self,
+        mut buf: &[u8],
+        writer: &mut W,
+    ) -> Result<FirstFrameIsRead, DecodingError> {
+        while buf.len() > 0 && self.state.is_some() {
+            match self.next_state(buf) {
+                Ok((_zero_bytes, Decoded::DataEnd)) => return Ok(true),
+                Ok((bytes, _result)) => {
+                    writer.write_all(&buf[..bytes]).await.expect("Write error");
+                    buf = &buf[bytes..];
+                }
+                Err(err) => return Err(err),
+            }
+        }
+        Ok(false)
+    }
+
     /// Returns the data of the last extension that has been decoded.
     pub fn last_ext(&self) -> (AnyExtension, &[u8], bool) {
         (self.ext.id, &self.ext.data, self.ext.is_block_end)
     }
-    
+
     #[inline(always)]
     /// Current frame info as a mutable ref.
     pub fn current_frame_mut<'a>(&'a mut self) -> &'a mut Frame<'static> {
         self.current.as_mut().unwrap()
     }
-    
+
     #[inline(always)]
     /// Current frame info as a ref.
     pub fn current_frame<'a>(&'a self) -> &'a Frame<'static> {
@@ -360,43 +375,45 @@ impl StreamingDecoder {
     fn next_state<'a>(&'a mut self, buf: &[u8]) -> Result<(usize, Decoded<'a>), DecodingError> {
         macro_rules! goto (
             ($n:expr, $state:expr) => ({
-                self.state = Some($state); 
+                self.state = Some($state);
                 Ok(($n, Decoded::Nothing))
             });
             ($state:expr) => ({
-                self.state = Some($state); 
+                self.state = Some($state);
                 Ok((1, Decoded::Nothing))
             });
             ($n:expr, $state:expr, emit $res:expr) => ({
-                self.state = Some($state); 
+                self.state = Some($state);
                 Ok(($n, $res))
             });
             ($state:expr, emit $res:expr) => ({
-                self.state = Some($state); 
+                self.state = Some($state);
                 Ok((1, $res))
             })
         );
-        
+
         let b = buf[0];
-        
+
         // Driver should ensure that state is never None
         let state = self.state.take().unwrap();
         //println!("{:?}", state);
-        
+
         match state {
-            Magic(i, mut version) => if i < 6 {
-                version[i] = b;
-                goto!(Magic(i+1, version))
-            } else if &version[..3] == b"GIF" {
-                self.version = match &version[3..] {
-                    b"87a" => Version::V87a,
-                    b"89a" => Version::V89a,
-                    _ => return Err(DecodingError::format("unsupported GIF version"))
-                };
-                goto!(U16Byte1(U16Value::ScreenWidth, b))
-            } else {
-                Err(DecodingError::format("malformed GIF header"))
-            },
+            Magic(i, mut version) => {
+                if i < 6 {
+                    version[i] = b;
+                    goto!(Magic(i + 1, version))
+                } else if &version[..3] == b"GIF" {
+                    self.version = match &version[3..] {
+                        b"87a" => Version::V87a,
+                        b"89a" => Version::V89a,
+                        _ => return Err(DecodingError::format("unsupported GIF version")),
+                    };
+                    goto!(U16Byte1(U16Value::ScreenWidth, b))
+                } else {
+                    Err(DecodingError::format("malformed GIF header"))
+                }
+            }
             U16(next) => goto!(U16Byte1(next, b)),
             U16Byte1(next, value) => {
                 use self::U16Value::*;
@@ -405,29 +422,29 @@ impl StreamingDecoder {
                     (ScreenWidth, width) => {
                         self.width = width;
                         goto!(U16(U16Value::ScreenHeight))
-                    },
+                    }
                     (ScreenHeight, height) => {
                         self.height = height;
                         goto!(Byte(ByteValue::GlobalFlags))
-                    },
+                    }
                     (Delay, delay) => {
                         self.ext.data.push(value as u8);
                         self.ext.data.push(b);
                         self.current_frame_mut().delay = delay;
                         goto!(Byte(ByteValue::TransparentIdx))
-                    },
+                    }
                     (ImageLeft, left) => {
                         self.current_frame_mut().left = left;
                         goto!(U16(U16Value::ImageTop))
-                    },
+                    }
                     (ImageTop, top) => {
                         self.current_frame_mut().top = top;
                         goto!(U16(U16Value::ImageWidth))
-                    },
+                    }
                     (ImageWidth, width) => {
                         self.current_frame_mut().width = width;
                         goto!(U16(U16Value::ImageHeight))
-                    },
+                    }
                     (ImageHeight, height) => {
                         self.current_frame_mut().height = height;
                         goto!(Byte(ByteValue::ImageFlags))
@@ -440,23 +457,25 @@ impl StreamingDecoder {
                     GlobalFlags => {
                         let global_table = b & 0x80 != 0;
                         let entries = if global_table {
-                            let entries = PLTE_CHANNELS*(1 << ((b & 0b111) + 1) as usize);
+                            let entries = PLTE_CHANNELS * (1 << ((b & 0b111) + 1) as usize);
                             self.global_color_table.reserve_exact(entries);
                             entries
                         } else {
                             0usize
                         };
-                        goto!(Byte(Background { table_size: entries }))
-                    },
+                        goto!(Byte(Background {
+                            table_size: entries
+                        }))
+                    }
                     Background { table_size } => {
                         goto!(
                             Byte(AspectRatio { table_size: table_size }),
                             emit Decoded::BackgroundColor(b)
                         )
-                    },
+                    }
                     AspectRatio { table_size } => {
                         goto!(GlobalPalette(table_size))
-                    },
+                    }
                     ControlFlags => {
                         self.ext.data.push(b);
                         let control_flags = b;
@@ -464,28 +483,26 @@ impl StreamingDecoder {
                             // Set to Some(...), gets overwritten later
                             self.current_frame_mut().transparent = Some(0)
                         }
-                        self.current_frame_mut().needs_user_input =
-                            control_flags & 0b10 != 0;
-                        self.current_frame_mut().dispose = match DisposalMethod::from_u8(
-                            (control_flags & 0b11100) >> 2
-                        ) {
-                            Some(method) => method,
-                            None => DisposalMethod::Any
-                        };
+                        self.current_frame_mut().needs_user_input = control_flags & 0b10 != 0;
+                        self.current_frame_mut().dispose =
+                            match DisposalMethod::from_u8((control_flags & 0b11100) >> 2) {
+                                Some(method) => method,
+                                None => DisposalMethod::Any,
+                            };
                         goto!(U16(U16Value::Delay))
                     }
                     TransparentIdx => {
                         self.ext.data.push(b);
                         if let Some(ref mut idx) = self.current_frame_mut().transparent {
-                             *idx = b
+                            *idx = b
                         }
                         goto!(SkipBlock(0))
                         //goto!(AwaitBlockEnd)
                     }
                     ImageFlags => {
                         let local_table = (b & 0b1000_0000) != 0;
-                        let interlaced   = (b & 0b0100_0000) != 0;
-                        let table_size  =  b & 0b0000_0111;
+                        let interlaced = (b & 0b0100_0000) != 0;
+                        let table_size = b & 0b0000_0111;
 
                         self.current_frame_mut().interlaced = interlaced;
 
@@ -496,21 +513,22 @@ impl StreamingDecoder {
                             if width.checked_sub(frame.width) < Some(frame.left)
                                 || height.checked_sub(frame.height) < Some(frame.top)
                             {
-                                return Err(DecodingError::format("frame descriptor is out-of-bounds"))
+                                return Err(DecodingError::format(
+                                    "frame descriptor is out-of-bounds",
+                                ));
                             }
                         }
 
                         if local_table {
                             let entries = PLTE_CHANNELS * (1 << (table_size + 1));
-                            
-                            self.current_frame_mut().palette =
-                                Some(Vec::with_capacity(entries));
+
+                            self.current_frame_mut().palette = Some(Vec::with_capacity(entries));
                             goto!(LocalPalette(entries))
                         } else {
                             goto!(Byte(CodeSize))
                         }
-                    },
-                    CodeSize => goto!(LzwInit(b))
+                    }
+                    CodeSize => goto!(LzwInit(b)),
                 }
             }
             GlobalPalette(left) => {
@@ -520,37 +538,39 @@ impl StreamingDecoder {
                     goto!(n, GlobalPalette(left - n))
                 } else {
                     let idx = self.background_color[0];
-                    match self.global_color_table.chunks(PLTE_CHANNELS).nth(idx as usize) {
+                    match self
+                        .global_color_table
+                        .chunks(PLTE_CHANNELS)
+                        .nth(idx as usize)
+                    {
                         Some(chunk) => self.background_color[..PLTE_CHANNELS]
                             .copy_from_slice(&chunk[..PLTE_CHANNELS]),
-                        None => self.background_color[0] = 0
+                        None => self.background_color[0] = 0,
                     }
                     goto!(BlockStart(Block::from_u8(b)), emit Decoded::GlobalPalette(
                         mem::replace(&mut self.global_color_table, Vec::new())
                     ))
                 }
             }
-            BlockStart(type_) => {
-                match type_ {
-                    Some(Block::Image) => {
-                        self.add_frame();
-                        goto!(U16Byte1(U16Value::ImageLeft, b), emit Decoded::BlockStart(Block::Image))
-                    }
-                    Some(Block::Extension) => {
-                        goto!(ExtensionBlock(AnyExtension(b)), emit Decoded::BlockStart(Block::Extension))
-                    }
-                    Some(Block::Trailer) => {
-                        goto!(0, State::Trailer, emit Decoded::BlockStart(Block::Trailer))
-                    }
-                    None => {
-                        if self.allow_unknown_blocks {
-                            goto!(SkipBlock(b as usize))
-                        } else {
-                            Err(DecodingError::format("unknown block type encountered"))
-                        }
+            BlockStart(type_) => match type_ {
+                Some(Block::Image) => {
+                    self.add_frame();
+                    goto!(U16Byte1(U16Value::ImageLeft, b), emit Decoded::BlockStart(Block::Image))
+                }
+                Some(Block::Extension) => {
+                    goto!(ExtensionBlock(AnyExtension(b)), emit Decoded::BlockStart(Block::Extension))
+                }
+                Some(Block::Trailer) => {
+                    goto!(0, State::Trailer, emit Decoded::BlockStart(Block::Trailer))
+                }
+                None => {
+                    if self.allow_unknown_blocks {
+                        goto!(SkipBlock(b as usize))
+                    } else {
+                        Err(DecodingError::format("unknown block type encountered"))
                     }
                 }
-            }
+            },
             BlockEnd(terminator) => {
                 if terminator == 0 {
                     if b == Block::Trailer as u8 {
@@ -559,9 +579,7 @@ impl StreamingDecoder {
                         goto!(BlockStart(Block::from_u8(b)))
                     }
                 } else {
-                    return Err(DecodingError::format(
-                        "expected block terminator not found"
-                    ))
+                    return Err(DecodingError::format("expected block terminator not found"));
                 }
             }
             ExtensionBlock(id) => {
@@ -579,9 +597,7 @@ impl StreamingDecoder {
                         }
                     }
                 } else {
-                    return Err(DecodingError::format(
-                        "unknown extention block encountered"
-                    ))
+                    return Err(DecodingError::format("unknown extention block encountered"));
                 }
             }
             SkipBlock(left) => {
@@ -602,9 +618,11 @@ impl StreamingDecoder {
             LocalPalette(left) => {
                 let n = cmp::min(left, buf.len());
                 if left > 0 {
-                    
-                    self.current_frame_mut().palette
-                        .as_mut().unwrap().extend(buf[..n].iter().cloned());
+                    self.current_frame_mut()
+                        .palette
+                        .as_mut()
+                        .unwrap()
+                        .extend(buf[..n].iter().cloned());
                     goto!(n, LocalPalette(left - n))
                 } else {
                     goto!(LzwInit(b))
@@ -613,9 +631,7 @@ impl StreamingDecoder {
             LzwInit(code_size) => {
                 // LZW spec: max 12 bits per code
                 if code_size > 11 {
-                    return Err(DecodingError::format(
-                        "invalid minimal code size"
-                    ))
+                    return Err(DecodingError::format("invalid minimal code size"));
                 }
                 self.lzw_reader = Some(LzwDecoder::new(BitOrder::Lsb, code_size));
                 goto!(DecodeSubBlock(b as usize), emit Decoded::Frame(self.current_frame_mut()))
@@ -645,17 +661,25 @@ impl StreamingDecoder {
                         decode_target = self.decode_buffer.as_mut_slice();
                     }
 
-                    debug_assert!(!decode_target.is_empty(), "LZW decoding can make forward progress.");
+                    debug_assert!(
+                        !decode_target.is_empty(),
+                        "LZW decoding can make forward progress."
+                    );
                     let decoded = decoder.decode_bytes(&buf[..n], decode_target);
 
                     if let Err(err) = decoded.status {
-                        return Err(io::Error::new(io::ErrorKind::InvalidData, &*format!("{:?}", err)).into());
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            &*format!("{:?}", err),
+                        )
+                        .into());
                     }
 
                     let bytes = &self.decode_buffer[..decoded.consumed_out.min(max_bytes)];
                     let consumed = decoded.consumed_in;
                     goto!(consumed, DecodeSubBlock(left - consumed), emit Decoded::Data(bytes))
-                }  else if b != 0 { // decode next sub-block
+                } else if b != 0 {
+                    // decode next sub-block
                     goto!(DecodeSubBlock(b as usize))
                 } else {
                     let max_bytes = self.current_frame().required_bytes();
@@ -680,21 +704,32 @@ impl StreamingDecoder {
                         decode_target = self.decode_buffer.as_mut_slice();
                     }
 
-                    debug_assert!(!decode_target.is_empty(), "LZW decoding can make forward progress.");
+                    debug_assert!(
+                        !decode_target.is_empty(),
+                        "LZW decoding can make forward progress."
+                    );
                     let decoded = decoder.decode_bytes(&[], decode_target);
 
                     match decoded.status {
-                        Ok(LzwStatus::Done) | Ok(LzwStatus::Ok) => {},
+                        Ok(LzwStatus::Done) | Ok(LzwStatus::Ok) => {}
                         Ok(LzwStatus::NoProgress) => {
                             if self.check_for_end_code {
-                                return Err(io::Error::new(io::ErrorKind::InvalidData, "No end code in lzw stream").into());
+                                return Err(io::Error::new(
+                                    io::ErrorKind::InvalidData,
+                                    "No end code in lzw stream",
+                                )
+                                .into());
                             } else {
                                 self.current = None;
                                 return goto!(0, FrameDecoded, emit Decoded::DataEnd);
                             }
-                        },
+                        }
                         Err(err) => {
-                            return Err(io::Error::new(io::ErrorKind::InvalidData, &*format!("{:?}", err)).into());
+                            return Err(io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                &*format!("{:?}", err),
+                            )
+                            .into());
                         }
                     }
                     let bytes = &self.decode_buffer[..decoded.consumed_out.min(max_bytes)];
@@ -718,18 +753,16 @@ impl StreamingDecoder {
             }
         }
     }
-    
+
     fn read_control_extension(&mut self, b: u8) -> Result<State, DecodingError> {
         self.add_frame();
         self.ext.data.push(b);
         if b != 4 {
-            return Err(DecodingError::format(
-                "control extension has wrong length"
-            ))
+            return Err(DecodingError::format("control extension has wrong length"));
         }
         Ok(Byte(ByteValue::ControlFlags))
     }
-    
+
     fn add_frame(&mut self) {
         if self.current.is_none() {
             self.current = Some(Frame::default())
@@ -739,20 +772,20 @@ impl StreamingDecoder {
 
 #[test]
 fn error_cast() {
-    let _ : Box<dyn error::Error> = DecodingError::Format(DecodingFormatError::new("testing")).into();
+    let _: Box<dyn error::Error> =
+        DecodingError::Format(DecodingFormatError::new("testing")).into();
 }
 
 #[cfg(test)]
 mod test {
-    use tokio::fs::OpenOptions;
-    use tokio::io::{BufWriter, AsyncWriteExt};
     use crate::StreamingDecoder;
-
+    use tokio::fs::OpenOptions;
+    use tokio::io::{AsyncWriteExt, BufWriter};
 
     #[tokio::test]
-    async fn test_extract_gif() {
+    async fn test_read_first_frame() {
         let url = "https://www.sample-videos.com/gif/1.gif";
-        // Easy optimization is let trailer: u16 = 59. 
+        // Easy optimization is let trailer: u16 = 59.
         // But for readability and semantics let's have separate IO writes
         let block_terminator: u8 = 0; // Block terminator
         let trailer: u8 = 59; // Corresponds to 3B
@@ -767,16 +800,48 @@ mod test {
         let mut response = reqwest::get(url).await.unwrap();
         while let Ok(Some(chunk)) = response.chunk().await {
             let (bytes_needed, stop) = decoder.read_until_first_frame(&chunk).unwrap();
-            // println!("Bytes needed: {}, stop: {}", bytes_needed, stop);
             writer.write_all(&chunk[..bytes_needed]).await.unwrap();
             if stop {
+                writer.write_u8(block_terminator).await.unwrap();
+                writer.write_u8(trailer).await.unwrap();
+                break;
+            }
+        }
+        writer.flush().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_write_first_frame() {
+        let url = "https://www.sample-videos.com/gif/2.gif";
+        // Easy optimization is let trailer: u16 = 59.
+        // But for readability and semantics let's have separate IO writes
+        let block_terminator: u8 = 0; // Block terminator
+        let trailer: u8 = 59; // Corresponds to 3B
+        let f = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .open("extracted_gif.gif")
+            .await
+            .expect("Unable to open file");
+        let mut writer = BufWriter::new(f);
+        let mut decoder = StreamingDecoder::new();
+        let mut response = reqwest::get(url).await.unwrap();
+        let mut first_frame_is_read = false;
+        while let Ok(Some(chunk)) = response.chunk().await {
+            first_frame_is_read = decoder
+                .write_until_first_frame(&chunk, &mut writer)
+                .await
+                .unwrap();
+            if first_frame_is_read {
                 writer.write_u8(block_terminator).await.unwrap();
                 writer.write_u8(trailer).await.unwrap();
                 writer.flush().await.unwrap();
                 break;
             }
-            // writer.write_all(&chunk).await.unwrap();
         }
-        // writer.flush().await.unwrap();
+        if !first_frame_is_read {
+            // Return some error
+            println!("First frame is not read");
+        }
     }
 }

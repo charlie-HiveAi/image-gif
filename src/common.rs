@@ -24,7 +24,7 @@ impl DisposalMethod {
             1 => Some(DisposalMethod::Keep),
             2 => Some(DisposalMethod::Background),
             3 => Some(DisposalMethod::Previous),
-            _ => None
+            _ => None,
         }
     }
 }
@@ -57,7 +57,7 @@ impl Block {
             0x2C => Some(Block::Image),
             0x21 => Some(Block::Extension),
             0x3B => Some(Block::Trailer),
-            _ => None
+            _ => None,
         }
     }
 }
@@ -121,7 +121,7 @@ impl Extension {
             0xF9 => Some(Extension::Control),
             0xFE => Some(Extension::Comment),
             0xFF => Some(Extension::Application),
-            _ => None
+            _ => None,
         }
     }
 }
@@ -151,7 +151,7 @@ pub struct Frame<'a> {
     pub palette: Option<Vec<u8>>,
     /// Buffer containing the image data.
     /// Only indices unless configured differently.
-    pub buffer: Cow<'a, [u8]>
+    pub buffer: Cow<'a, [u8]>,
 }
 
 impl<'a> Default for Frame<'a> {
@@ -167,7 +167,7 @@ impl<'a> Default for Frame<'a> {
             height: 0,
             interlaced: false,
             palette: None,
-            buffer: Cow::Borrowed(&[])
+            buffer: Cow::Borrowed(&[]),
         }
     }
 }
@@ -204,9 +204,17 @@ impl Frame<'static> {
     /// *   If the length of pixels does not equal `width * height * 4`.
     /// *   If `speed < 1` or `speed > 30`
     #[cfg(feature = "color_quant")]
-    pub fn from_rgba_speed(width: u16, height: u16, pixels: &mut [u8], speed: i32) -> Frame<'static> {
+    pub fn from_rgba_speed(
+        width: u16,
+        height: u16,
+        pixels: &mut [u8],
+        speed: i32,
+    ) -> Frame<'static> {
         assert_eq!(width as usize * height as usize * 4, pixels.len(), "Too much or too little pixel data for the given width and height to create a GIF Frame");
-        assert!(speed >= 1 && speed <= 30, "speed needs to be in the range [1, 30]");
+        assert!(
+            speed >= 1 && speed <= 30,
+            "speed needs to be in the range [1, 30]"
+        );
         let mut transparent = None;
         for pix in pixels.chunks_exact_mut(4) {
             if pix[3] != 0 {
@@ -227,7 +235,12 @@ impl Frame<'static> {
                 return Frame {
                     width,
                     height,
-                    buffer: Cow::Owned(pixels.chunks_exact(4).map(|pix| nq.index_of(pix) as u8).collect()),
+                    buffer: Cow::Owned(
+                        pixels
+                            .chunks_exact(4)
+                            .map(|pix| nq.index_of(pix) as u8)
+                            .collect(),
+                    ),
                     palette: Some(nq.color_map_rgb()),
                     transparent: transparent.map(|t| nq.index_of(&t) as u8),
                     ..Frame::default()
@@ -238,11 +251,18 @@ impl Frame<'static> {
         // Palette size <= 256 elements, we can build an exact palette.
         let mut colors_vec: Vec<(u8, u8, u8, u8)> = colors.into_iter().collect();
         colors_vec.sort();
-        let palette = colors_vec.iter().flat_map(|&(r, g, b, _a)| [r, g, b]).collect();
-        let colors_lookup: HashMap<(u8, u8, u8, u8), u8> =  colors_vec.into_iter().zip(0..=255).collect();
+        let palette = colors_vec
+            .iter()
+            .flat_map(|&(r, g, b, _a)| [r, g, b])
+            .collect();
+        let colors_lookup: HashMap<(u8, u8, u8, u8), u8> =
+            colors_vec.into_iter().zip(0..=255).collect();
 
-        let index_of = | pixel: &[u8] |
-            *colors_lookup.get(&(pixel[0], pixel[1], pixel[2], pixel[3])).unwrap();
+        let index_of = |pixel: &[u8]| {
+            *colors_lookup
+                .get(&(pixel[0], pixel[1], pixel[2], pixel[3]))
+                .unwrap()
+        };
 
         return Frame {
             width,
@@ -251,7 +271,7 @@ impl Frame<'static> {
             palette: Some(palette),
             transparent: transparent.map(|t| index_of(&t)),
             ..Frame::default()
-        }
+        };
     }
 
     /// Creates a frame from a palette and indexed pixels.
@@ -259,9 +279,22 @@ impl Frame<'static> {
     /// # Panics:
     /// *   If the length of pixels does not equal `width * height`.
     /// *   If the length of palette > `256 * 3`.
-    pub fn from_palette_pixels(width: u16, height: u16, pixels: &[u8], palette: &[u8], transparent: Option<u8>) -> Frame<'static> {
-        assert_eq!(width as usize * height as usize, pixels.len(), "Too many or too little pixels for the given width and height to create a GIF Frame");
-        assert!(palette.len() <= 256*3, "Too many palette values to create a GIF Frame");
+    pub fn from_palette_pixels(
+        width: u16,
+        height: u16,
+        pixels: &[u8],
+        palette: &[u8],
+        transparent: Option<u8>,
+    ) -> Frame<'static> {
+        assert_eq!(
+            width as usize * height as usize,
+            pixels.len(),
+            "Too many or too little pixels for the given width and height to create a GIF Frame"
+        );
+        assert!(
+            palette.len() <= 256 * 3,
+            "Too many palette values to create a GIF Frame"
+        );
 
         Frame {
             width,
@@ -277,8 +310,17 @@ impl Frame<'static> {
     ///
     /// # Panics:
     /// *   If the length of pixels does not equal `width * height`.
-    pub fn from_indexed_pixels(width: u16, height: u16, pixels: &[u8], transparent: Option<u8>) -> Frame<'static> {
-        assert_eq!(width as usize * height as usize, pixels.len(), "Too many or too little pixels for the given width and height to create a GIF Frame");
+    pub fn from_indexed_pixels(
+        width: u16,
+        height: u16,
+        pixels: &[u8],
+        transparent: Option<u8>,
+    ) -> Frame<'static> {
+        assert_eq!(
+            width as usize * height as usize,
+            pixels.len(),
+            "Too many or too little pixels for the given width and height to create a GIF Frame"
+        );
 
         Frame {
             width,

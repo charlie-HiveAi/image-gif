@@ -8,10 +8,16 @@ fn try_decode_crash_regression() {
         let entry = entry.unwrap();
         if let Some(ext) = entry.path().extension() {
             if ext.to_str() != Some("gif") {
-                panic!("Unexpected file {} in crashtests, should end with .gif", entry.path().display());
+                panic!(
+                    "Unexpected file {} in crashtests, should end with .gif",
+                    entry.path().display()
+                );
             }
         } else {
-            panic!("Unexpected file {} in crashtests, should end with .gif", entry.path().display());
+            panic!(
+                "Unexpected file {} in crashtests, should end with .gif",
+                entry.path().display()
+            );
         }
 
         let file_data = fs::read(entry.path()).unwrap();
@@ -27,7 +33,8 @@ fn decode_on_timer(data: Vec<u8>) {
         send.send(result).expect("still waiting");
     });
 
-    let _ = recv.recv_timeout(Duration::from_secs(1))
+    let _ = recv
+        .recv_timeout(Duration::from_secs(1))
         .expect("any result");
 }
 

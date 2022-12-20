@@ -1,5 +1,5 @@
-use std::{fs, io};
 use gif::DecodeOptions;
+use std::{fs, io};
 
 #[test]
 fn try_decode_crash_regression() {
@@ -10,10 +10,16 @@ fn try_decode_crash_regression() {
         let entry = entry.unwrap();
         if let Some(ext) = entry.path().extension() {
             if ext.to_str() != Some("gif") {
-                panic!("Unexpected file {} in crashtests, should end with .gif", entry.path().display());
+                panic!(
+                    "Unexpected file {} in crashtests, should end with .gif",
+                    entry.path().display()
+                );
             }
         } else {
-            panic!("Unexpected file {} in crashtests, should end with .gif", entry.path().display());
+            panic!(
+                "Unexpected file {} in crashtests, should end with .gif",
+                entry.path().display()
+            );
         }
 
         let file_data = fs::read(entry.path()).unwrap();

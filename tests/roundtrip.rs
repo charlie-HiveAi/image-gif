@@ -2,7 +2,10 @@ use gif::{ColorOutput, Decoder, Encoder, Frame};
 
 #[test]
 fn encode_roundtrip() {
-    const ORIGINAL: &'static [u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/samples/2x2.gif"));
+    const ORIGINAL: &'static [u8] = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/samples/2x2.gif"
+    ));
     round_trip_from_image(ORIGINAL);
 }
 
@@ -12,13 +15,8 @@ fn round_trip_from_image(original: &[u8]) {
         let mut decoder = Decoder::new(original).unwrap();
         width = decoder.width();
         height = decoder.height();
-        global_palette = decoder
-            .global_palette()
-            .unwrap_or_default()
-            .to_vec();
-        core::iter::from_fn(move || {
-            decoder.read_next_frame().unwrap().cloned()
-        }).collect()
+        global_palette = decoder.global_palette().unwrap_or_default().to_vec();
+        core::iter::from_fn(move || decoder.read_next_frame().unwrap().cloned()).collect()
     };
 
     let mut encoder = Encoder::new(vec![], width, height, &global_palette).unwrap();
@@ -32,9 +30,8 @@ fn round_trip_from_image(original: &[u8]) {
         assert_eq!(decoder.width(), width);
         assert_eq!(decoder.height(), height);
         assert_eq!(global_palette, decoder.global_palette().unwrap_or_default());
-        let new_frames: Vec<_> = core::iter::from_fn(move || {
-            decoder.read_next_frame().unwrap().cloned()
-        }).collect();
+        let new_frames: Vec<_> =
+            core::iter::from_fn(move || decoder.read_next_frame().unwrap().cloned()).collect();
         assert_eq!(new_frames.len(), frames.len(), "Diverging number of frames");
         for (new, reference) in new_frames.iter().zip(&frames) {
             assert_eq!(new.delay, reference.delay);
@@ -85,16 +82,17 @@ fn encode_roundtrip_few_colors() {
         let mut decoder = {
             let mut builder = Decoder::<&[u8]>::build();
             builder.set_color_output(ColorOutput::RGBA);
-            builder.read_info(&buffer[..]).expect("Invalid info encoded")
+            builder
+                .read_info(&buffer[..])
+                .expect("Invalid info encoded")
         };
 
         // Only check key fields, assuming "round_trip_from_image"
         // covers the rest. We are primarily concerned with quantisation.
         assert_eq!(decoder.width(), WIDTH);
         assert_eq!(decoder.height(), HEIGHT);
-        let new_frames: Vec<_> = core::iter::from_fn(move || {
-            decoder.read_next_frame().unwrap().cloned()
-        }).collect();
+        let new_frames: Vec<_> =
+            core::iter::from_fn(move || decoder.read_next_frame().unwrap().cloned()).collect();
         assert_eq!(new_frames.len(), 2, "Diverging number of frames");
         // NB: reference.buffer can't be used as it contains the palette version.
         assert_eq!(new_frames[0].buffer, pixels);

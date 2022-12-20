@@ -1,14 +1,14 @@
 //! # Minimal gif encoder
+use std::borrow::Cow;
+use std::error;
+use std::fmt;
 use std::io;
 use std::io::prelude::*;
-use std::fmt;
-use std::error;
-use std::borrow::Cow;
 
-use weezl::{BitOrder, encode::Encoder as LzwEncoder};
+use weezl::{encode::Encoder as LzwEncoder, BitOrder};
 
-use crate::traits::{WriteBytesExt};
 use crate::common::{AnyExtension, Block, DisposalMethod, Extension, Frame};
+use crate::traits::WriteBytesExt;
 
 #[derive(Debug)]
 enum FormatErrorKind {
@@ -21,7 +21,7 @@ enum FormatErrorKind {
 /// The image has incorrect properties, making it impossible to encode as a gif.
 #[derive(Debug)]
 pub struct EncodingFormatError {
-    kind: FormatErrorKind
+    kind: FormatErrorKind,
 }
 
 impl error::Error for EncodingFormatError {}
@@ -29,7 +29,10 @@ impl fmt::Display for EncodingFormatError {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.kind {
             FormatErrorKind::TooManyColors => write!(fmt, "the image has too many colors"),
-            FormatErrorKind::MissingColorPalette => write!(fmt, "the GIF format requires a color palette but none was given")
+            FormatErrorKind::MissingColorPalette => write!(
+                fmt,
+                "the GIF format requires a color palette but none was given"
+            ),
         }
     }
 }
@@ -85,14 +88,13 @@ impl From<FormatErrorKind> for EncodingError {
     }
 }
 
-
 /// Number of repetitions
 #[derive(Copy, Clone, Debug)]
 pub enum Repeat {
     /// Finite number of repetitions
     Finite(u16),
     /// Infinite number of repetitions
-    Infinite
+    Infinite,
 }
 
 /// Extension data.
@@ -104,32 +106,36 @@ pub enum ExtensionData {
         /// Frame delay.
         delay: u16,
         /// Transparent index.
-        trns: u8
+        trns: u8,
     },
     /// Sets the number of repetitions
-    Repetitions(Repeat)
+    Repetitions(Repeat),
 }
 
 impl ExtensionData {
     /// Constructor for control extension data.
     ///
     /// `delay` is given in units of 10 ms.
-    pub fn new_control_ext(delay: u16, dispose: DisposalMethod,
-                           needs_user_input: bool, trns: Option<u8>) -> ExtensionData {
+    pub fn new_control_ext(
+        delay: u16,
+        dispose: DisposalMethod,
+        needs_user_input: bool,
+        trns: Option<u8>,
+    ) -> ExtensionData {
         let mut flags = 0;
         let trns = match trns {
             Some(trns) => {
                 flags |= 1;
                 trns as u8
-            },
-            None => 0
+            }
+            None => 0,
         };
         flags |= (needs_user_input as u8) << 1;
         flags |= (dispose as u8) << 2;
         ExtensionData::Control {
             flags: flags,
             delay: delay,
-            trns: trns
+            trns: trns,
         }
     }
 }
@@ -139,15 +145,21 @@ impl<W: Write> Encoder<W> {
     ///
     /// `global_palette` gives the global color palette in the format `[r, g, b, ...]`,
     /// if no global palette shall be used an empty slice may be supplied.
-    pub fn new(w: W, width: u16, height: u16, global_palette: &[u8]) -> Result<Self, EncodingError> {
+    pub fn new(
+        w: W,
+        width: u16,
+        height: u16,
+        global_palette: &[u8],
+    ) -> Result<Self, EncodingError> {
         let buffer_size = (width as usize) * (height as usize);
         Encoder {
             w: Some(w),
             global_palette: false,
             width: width,
             height: height,
-            buffer: Vec::with_capacity(buffer_size)
-        }.write_global_palette(global_palette)
+            buffer: Vec::with_capacity(buffer_size),
+        }
+        .write_global_palette(global_palette)
     }
 
     /// Write an extension block that signals a repeat behaviour.
@@ -185,13 +197,12 @@ impl<W: Write> Encoder<W> {
     fn write_frame_header(&mut self, frame: &Frame) -> Result<(), EncodingError> {
         // TODO commented off to pass test in lib.rs
         //if frame.delay > 0 || frame.transparent.is_some() {
-            self.write_extension(ExtensionData::new_control_ext(
-                frame.delay,
-                frame.dispose,
-                frame.needs_user_input,
-                frame.transparent
-
-            ))?;
+        self.write_extension(ExtensionData::new_control_ext(
+            frame.delay,
+            frame.dispose,
+            frame.needs_user_input,
+            frame.transparent,
+        ))?;
         //}
         let writer = self.w.as_mut().unwrap();
         writer.write_le(Block::Image as u8)?;
@@ -213,11 +224,13 @@ impl<W: Write> Encoder<W> {
                 flags |= flag_size(num_colors);
                 writer.write_le(flags)?;
                 self.write_color_table(palette)
-            },
-            None => if !self.global_palette {
-                Err(EncodingError::from(FormatErrorKind::MissingColorPalette))
-            } else {
-                writer.write_le(flags).map_err(Into::into)
+            }
+            None => {
+                if !self.global_palette {
+                    Err(EncodingError::from(FormatErrorKind::MissingColorPalette))
+                } else {
+                    writer.write_le(flags).map_err(Into::into)
+                }
             }
         }
     }
@@ -230,7 +243,10 @@ impl<W: Write> Encoder<W> {
         Self::write_encoded_image_block(writer, &self.buffer)
     }
 
-    fn write_encoded_image_block(writer: &mut W, data_with_min_code_size: &[u8]) -> Result<(), EncodingError> {
+    fn write_encoded_image_block(
+        writer: &mut W,
+        data_with_min_code_size: &[u8],
+    ) -> Result<(), EncodingError> {
         let (&min_code_size, data) = data_with_min_code_size.split_first().unwrap_or((&2, &[]));
         writer.write_le(min_code_size)?;
 
@@ -272,7 +288,7 @@ impl<W: Write> Encoder<W> {
         // 0 finite repetitions can only be achieved
         // if the corresponting extension is not written
         if let Repetitions(Repeat::Finite(0)) = extension {
-            return Ok(())
+            return Ok(());
         }
         let writer = self.w.as_mut().unwrap();
         writer.write_le(Block::Extension as u8)?;
@@ -368,12 +384,12 @@ impl<W: Write> Encoder<W> {
 fn lzw_encode(data: &[u8], buffer: &mut Vec<u8>) {
     let min_code_size = match flag_size(1 + data.iter().copied().max().unwrap_or(0) as usize) + 1 {
         1 => 2, // As per gif spec: The minimal code size has to be >= 2
-        n => n
+        n => n,
     };
     buffer.push(min_code_size);
     let mut enc = LzwEncoder::new(BitOrder::Lsb, min_code_size);
     let len = enc.into_vec(buffer).encode_all(data).consumed_out;
-    buffer.truncate(len+1);
+    buffer.truncate(len + 1);
 }
 
 impl Frame<'_> {
@@ -393,11 +409,10 @@ pub struct Encoder<W: Write> {
     global_palette: bool,
     width: u16,
     height: u16,
-    buffer: Vec<u8>
+    buffer: Vec<u8>,
 }
 
 impl<W: Write> Drop for Encoder<W> {
-
     #[cfg(feature = "raii_no_panic")]
     fn drop(&mut self) {
         if self.w.is_some() {
@@ -416,19 +431,19 @@ impl<W: Write> Drop for Encoder<W> {
 // Color table size converted to flag bits
 fn flag_size(size: usize) -> u8 {
     match size {
-        0  ..=2   => 0,
-        3  ..=4   => 1,
-        5  ..=8   => 2,
-        9  ..=16  => 3,
-        17 ..=32  => 4,
-        33 ..=64  => 5,
-        65 ..=128 => 6,
+        0..=2 => 0,
+        3..=4 => 1,
+        5..=8 => 2,
+        9..=16 => 3,
+        17..=32 => 4,
+        33..=64 => 5,
+        65..=128 => 6,
         129..=256 => 7,
-        _ => 7
+        _ => 7,
     }
 }
 
 #[test]
 fn error_cast() {
-    let _ : Box<dyn error::Error> = EncodingError::from(FormatErrorKind::MissingColorPalette).into();
+    let _: Box<dyn error::Error> = EncodingError::from(FormatErrorKind::MissingColorPalette).into();
 }

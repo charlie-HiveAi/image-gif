@@ -1,16 +1,16 @@
 use std::borrow::Cow;
-use std::io;
 use std::cmp;
-use std::mem;
-use std::iter;
+use std::io;
 use std::io::prelude::*;
+use std::iter;
+use std::mem;
 
 use crate::common::{Block, Frame};
 
 mod decoder;
 pub use self::decoder::{
-    PLTE_CHANNELS, StreamingDecoder, Decoded, DecodingError, DecodingFormatError, Extensions,
-    Version
+    Decoded, DecodingError, DecodingFormatError, Extensions, StreamingDecoder, Version,
+    PLTE_CHANNELS,
 };
 
 const N_CHANNELS: usize = 4;
@@ -149,7 +149,7 @@ impl DecodeOptions {
 struct ReadDecoder<R: Read> {
     reader: io::BufReader<R>,
     decoder: StreamingDecoder,
-    at_eof: bool
+    at_eof: bool,
 }
 
 impl<R: Read> ReadDecoder<R> {
@@ -158,22 +158,20 @@ impl<R: Read> ReadDecoder<R> {
             let (consumed, result) = {
                 let buf = self.reader.fill_buf()?;
                 if buf.len() == 0 {
-                    return Err(DecodingError::format(
-                        "unexpected EOF"
-                    ))
+                    return Err(DecodingError::format("unexpected EOF"));
                 }
                 self.decoder.update(buf)?
             };
             self.reader.consume(consumed);
             match result {
                 Decoded::Nothing => (),
-                Decoded::BlockStart(Block::Trailer) => {
-                    self.at_eof = true
-                },
-                result => return Ok(unsafe{
-                    // FIXME: #6393
-                    Some(mem::transmute::<Decoded, Decoded>(result))
-                }),
+                Decoded::BlockStart(Block::Trailer) => self.at_eof = true,
+                result => {
+                    return Ok(unsafe {
+                        // FIXME: #6393
+                        Some(mem::transmute::<Decoded, Decoded>(result))
+                    })
+                }
             }
         }
         Ok(None)
@@ -192,7 +190,10 @@ pub struct Decoder<R: Read> {
     buffer: Vec<u8>,
 }
 
-impl<R> Decoder<R> where R: Read {
+impl<R> Decoder<R>
+where
+    R: Read,
+{
     /// Create a new decoder with default options.
     pub fn new(reader: R) -> Result<Self, DecodingError> {
         DecodeOptions::new().read_info(reader)
@@ -208,7 +209,7 @@ impl<R> Decoder<R> where R: Read {
             decoder: ReadDecoder {
                 reader: io::BufReader::new(reader),
                 decoder,
-                at_eof: false
+                at_eof: false,
             },
             bg_color: None,
             global_palette: None,
@@ -218,29 +219,29 @@ impl<R> Decoder<R> where R: Read {
             current_frame: Frame::default(),
         }
     }
-    
+
     fn init(mut self) -> Result<Self, DecodingError> {
         loop {
             match self.decoder.decode_next()? {
-                Some(Decoded::BackgroundColor(bg_color)) => {
-                    self.bg_color = Some(bg_color)
-                }
+                Some(Decoded::BackgroundColor(bg_color)) => self.bg_color = Some(bg_color),
                 Some(Decoded::GlobalPalette(palette)) => {
                     self.global_palette = if palette.len() > 0 {
                         Some(palette)
                     } else {
                         None
                     };
-                    break
-                },
+                    break;
+                }
                 Some(_) => {
                     // Unreachable since this loop exists after the global
                     // palette has been read.
                     unreachable!()
-                },
-                None => return Err(DecodingError::format(
-                    "file does not contain any image data"
-                ))
+                }
+                None => {
+                    return Err(DecodingError::format(
+                        "file does not contain any image data",
+                    ))
+                }
             }
         }
         // If the background color is invalid, ignore it
@@ -251,7 +252,7 @@ impl<R> Decoder<R> where R: Read {
         }
         Ok(self)
     }
-    
+
     /// Returns the next frame info
     pub fn next_frame_info(&mut self) -> Result<Option<&Frame<'static>>, DecodingError> {
         if !self.buffer.is_empty() {
@@ -265,14 +266,13 @@ impl<R> Decoder<R> where R: Read {
                     self.current_frame = frame.clone();
                     if frame.palette.is_none() && self.global_palette.is_none() {
                         return Err(DecodingError::format(
-                            "no color table available for current frame"
-                        ))
+                            "no color table available for current frame",
+                        ));
                     }
-                    break
-                },
+                    break;
+                }
                 Some(_) => (),
-                None => return Ok(None)
-                
+                None => return Ok(None),
             }
         }
         Ok(Some(&self.current_frame))
@@ -285,14 +285,14 @@ impl<R> Decoder<R> where R: Read {
     pub fn read_next_frame(&mut self) -> Result<Option<&Frame<'static>>, DecodingError> {
         if let Some(frame) = self.next_frame_info()? {
             let (width, height) = (frame.width, frame.height);
-            let pixel_bytes = self.memory_limit
+            let pixel_bytes = self
+                .memory_limit
                 .buffer_size(self.color_output, width, height)
-                .ok_or_else(|| {
-                    DecodingError::format("image is too large to decode")
-                })?;
+                .ok_or_else(|| DecodingError::format("image is too large to decode"))?;
 
             debug_assert_eq!(
-                pixel_bytes, self.buffer_size(),
+                pixel_bytes,
+                self.buffer_size(),
                 "Checked computation diverges from required buffer size"
             );
 
@@ -315,15 +315,19 @@ impl<R> Decoder<R> where R: Read {
         if self.current_frame.interlaced {
             let width = self.line_length();
             let height = self.current_frame.height as usize;
-            for row in (InterlaceIterator { len: height, next: 0, pass: 0 }) {
-                if !self.fill_buffer(&mut buf[row*width..][..width])? {
-                    return Err(DecodingError::format("image truncated"))
+            for row in (InterlaceIterator {
+                len: height,
+                next: 0,
+                pass: 0,
+            }) {
+                if !self.fill_buffer(&mut buf[row * width..][..width])? {
+                    return Err(DecodingError::format("image truncated"));
                 }
             }
         } else {
             let buf = &mut buf[..self.buffer_size()];
             if !self.fill_buffer(buf)? {
-                return Err(DecodingError::format("image truncated"))
+                return Err(DecodingError::format("image truncated"));
             }
         };
         Ok(())
@@ -375,55 +379,54 @@ impl<R> Decoder<R> where R: Read {
         if buf_len > 0 {
             let (len, channels) = handle_data!(&self.buffer);
             let _ = self.buffer.drain(..len);
-            buf = &mut buf[len*channels..];
+            buf = &mut buf[len * channels..];
             if buf.len() == 0 {
-                return Ok(true)
+                return Ok(true);
             }
         }
         loop {
             match self.decoder.decode_next()? {
                 Some(Decoded::Data(data)) => {
                     let (len, channels) = handle_data!(data);
-                    buf = &mut buf[len*channels..]; // shorten buf
+                    buf = &mut buf[len * channels..]; // shorten buf
                     if buf.len() > 0 {
-                        continue
+                        continue;
                     } else if len < data.len() {
                         self.buffer.extend_from_slice(&data[len..]);
                     }
-                    return Ok(true)
-                },
+                    return Ok(true);
+                }
                 Some(_) => return Ok(false), // make sure that no important result is missed
-                None => return Ok(false)
-                
+                None => return Ok(false),
             }
         }
     }
-    
+
     /// Output buffer size
     pub fn buffer_size(&self) -> usize {
         self.line_length() * self.current_frame.height as usize
     }
-    
+
     /// Line length of the current frame
     pub fn line_length(&self) -> usize {
         use self::ColorOutput::*;
         match self.color_output {
             RGBA => self.current_frame.width as usize * N_CHANNELS,
-            Indexed => self.current_frame.width as usize
+            Indexed => self.current_frame.width as usize,
         }
     }
-    
+
     /// Returns the color palette relevant for the current (next) frame
     pub fn palette(&self) -> Result<&[u8], DecodingError> {
         // TODO prevent planic
         Ok(match self.current_frame.palette {
             Some(ref table) => &*table,
             None => &*self.global_palette.as_ref().ok_or(DecodingError::format(
-                "no color table available for current frame"
+                "no color table available for current frame",
             ))?,
         })
     }
-    
+
     /// The global color palette
     pub fn global_palette(&self) -> Option<&[u8]> {
         self.global_palette.as_ref().map(|v| &**v)
@@ -448,7 +451,7 @@ impl<R> Decoder<R> where R: Read {
 struct InterlaceIterator {
     len: usize,
     next: usize,
-    pass: usize
+    pass: usize,
 }
 
 impl iter::Iterator for InterlaceIterator {
@@ -456,7 +459,7 @@ impl iter::Iterator for InterlaceIterator {
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.len == 0 || self.pass > 3 {
-            return None
+            return None;
         }
         let mut next = self.next + [8, 8, 4, 2][self.pass];
         while next >= self.len {
@@ -473,23 +476,20 @@ mod test {
     use std::fs::File;
 
     use super::{Decoder, InterlaceIterator};
-    
+
     #[test]
     fn test_simple_indexed() {
         let mut decoder = Decoder::new(File::open("tests/samples/sample_1.gif").unwrap()).unwrap();
         let frame = decoder.read_next_frame().unwrap().unwrap();
-        assert_eq!(&*frame.buffer, &[
-            1, 1, 1, 1, 1, 2, 2, 2, 2, 2,
-            1, 1, 1, 1, 1, 2, 2, 2, 2, 2,
-            1, 1, 1, 1, 1, 2, 2, 2, 2, 2,
-            1, 1, 1, 0, 0, 0, 0, 2, 2, 2,
-            1, 1, 1, 0, 0, 0, 0, 2, 2, 2,
-            2, 2, 2, 0, 0, 0, 0, 1, 1, 1,
-            2, 2, 2, 0, 0, 0, 0, 1, 1, 1,
-            2, 2, 2, 2, 2, 1, 1, 1, 1, 1,
-            2, 2, 2, 2, 2, 1, 1, 1, 1, 1,
-            2, 2, 2, 2, 2, 1, 1, 1, 1, 1
-        ][..])
+        assert_eq!(
+            &*frame.buffer,
+            &[
+                1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 2, 2, 2,
+                2, 2, 1, 1, 1, 0, 0, 0, 0, 2, 2, 2, 1, 1, 1, 0, 0, 0, 0, 2, 2, 2, 2, 2, 2, 0, 0, 0,
+                0, 1, 1, 1, 2, 2, 2, 0, 0, 0, 0, 1, 1, 1, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 2, 2, 2, 2,
+                2, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1
+            ][..]
+        )
     }
 
     #[test]
@@ -511,10 +511,20 @@ mod test {
             (13, &[0, 8, 4, 12, 2, 6, 10, 1, 3, 5, 7, 9, 11][..]),
             (14, &[0, 8, 4, 12, 2, 6, 10, 1, 3, 5, 7, 9, 11, 13][..]),
             (15, &[0, 8, 4, 12, 2, 6, 10, 14, 1, 3, 5, 7, 9, 11, 13][..]),
-            (16, &[0, 8, 4, 12, 2, 6, 10, 14, 1, 3, 5, 7, 9, 11, 13, 15][..]),
-            (17, &[0, 8, 16, 4, 12, 2, 6, 10, 14, 1, 3, 5, 7, 9, 11, 13, 15][..]),
+            (
+                16,
+                &[0, 8, 4, 12, 2, 6, 10, 14, 1, 3, 5, 7, 9, 11, 13, 15][..],
+            ),
+            (
+                17,
+                &[0, 8, 16, 4, 12, 2, 6, 10, 14, 1, 3, 5, 7, 9, 11, 13, 15][..],
+            ),
         ] {
-            let iter = InterlaceIterator { len: len, next: 0, pass: 0 };
+            let iter = InterlaceIterator {
+                len: len,
+                next: 0,
+                pass: 0,
+            };
             let lines = iter.collect::<Vec<_>>();
             assert_eq!(lines, expect);
         }

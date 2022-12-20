@@ -1,18 +1,18 @@
 //! # GIF en- and decoding library [![Build Status](https://github.com/image-rs/image-gif/workflows/Rust%20CI/badge.svg)](https://github.com/image-rs/image-gif/actions)
-//! 
+//!
 //! GIF en- and decoder written in Rust ([API Documentation](https://docs.rs/gif)).
-//! 
+//!
 //! # GIF encoding and decoding library
-//! 
+//!
 //! This library provides all functions necessary to de- and encode GIF files.
-//! 
+//!
 //! ## High level interface
-//! 
+//!
 //! The high level interface consists of the two types
 //! [`Encoder`](struct.Encoder.html) and [`Decoder`](struct.Decoder.html).
-//! 
+//!
 //! ### Decoding GIF files
-//! 
+//!
 //! ```rust
 //! // Open the file
 //! use std::fs::File;
@@ -26,18 +26,18 @@
 //!     // Process every frame
 //! }
 //! ```
-//! 
-//! 
-//! 
+//!
+//!
+//!
 //! ### Encoding GIF files
 //!
 //! The encoder can be used so save simple computer generated images:
-//! 
+//!
 //! ```rust
 //! use gif::{Frame, Encoder, Repeat};
 //! use std::fs::File;
 //! use std::borrow::Cow;
-//! 
+//!
 //! let color_map = &[0xFF, 0xFF, 0xFF, 0, 0, 0];
 //! let (width, height) = (6, 6);
 //! let mut beacon_states = [[
@@ -73,7 +73,7 @@
 //! ```rust
 //! # #[cfg(feature = "color_quant")] {
 //! use std::fs::File;
-//! 
+//!
 //! // Get pixel data from some source
 //! let mut pixels: Vec<u8> = vec![0; 30_000];
 //! // Create frame from data
@@ -111,27 +111,30 @@
 #![deny(missing_docs)]
 #![cfg(feature = "std")]
 
-mod traits;
 mod common;
-mod reader;
 mod encoder;
+mod reader;
+mod traits;
 
-pub use crate::common::{AnyExtension, Block, Extension, DisposalMethod, Frame};
+pub use crate::common::{AnyExtension, Block, DisposalMethod, Extension, Frame};
 
-pub use crate::reader::{StreamingDecoder, Decoded, DecodingError, DecodingFormatError};
 /// StreamingDecoder configuration parameters
-pub use crate::reader::{ColorOutput, MemoryLimit, Extensions};
+pub use crate::reader::{ColorOutput, Extensions, MemoryLimit};
 pub use crate::reader::{DecodeOptions, Decoder, Version};
+pub use crate::reader::{Decoded, DecodingError, DecodingFormatError, StreamingDecoder};
 
-pub use crate::encoder::{Encoder, ExtensionData, Repeat, EncodingError};
+pub use crate::encoder::{Encoder, EncodingError, ExtensionData, Repeat};
 
 #[cfg(test)]
 #[test]
 fn round_trip() {
-    use std::io::prelude::*;
     use std::fs::File;
+    use std::io::prelude::*;
     let mut data = vec![];
-    File::open("tests/samples/sample_1.gif").unwrap().read_to_end(&mut data).unwrap();
+    File::open("tests/samples/sample_1.gif")
+        .unwrap()
+        .read_to_end(&mut data)
+        .unwrap();
     let mut decoder = Decoder::new(&*data).unwrap();
     let palette: Vec<u8> = decoder.palette().unwrap().into();
     let frame = decoder.read_next_frame().unwrap().unwrap();
