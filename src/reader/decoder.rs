@@ -318,7 +318,11 @@ impl StreamingDecoder {
         let mut num_bytes_until_first_frame = 0;
         while buf.len() > 0 && self.state.is_some() {
             match self.next_state(buf) {
-                Ok((_zero_bytes, Decoded::DataEnd)) => return Ok((num_bytes_until_first_frame, true)),
+                Ok((_zero_bytes, Decoded::DataEnd)) => {
+                    writer.write_u16(59).await.unwrap(); // 00 = 8 bytes of block terminator, 59 == 8 bytes of trailer
+                    num_bytes_until_first_frame += 2;
+                    return Ok((num_bytes_until_first_frame, true))
+                },
                 Ok((bytes, _result)) => {
                     writer.write_all(&buf[..bytes]).await.expect("Write error");
                     buf = &buf[bytes..];
@@ -836,8 +840,6 @@ mod test {
                 .await
                 .unwrap();
             if first_frame_is_read {
-                writer.write_u8(block_terminator).await.unwrap();
-                writer.write_u8(trailer).await.unwrap();
                 writer.flush().await.unwrap();
                 break;
             }
